@@ -1,4 +1,4 @@
-package kafkas
+package kafka08
 
 import kafka.serializer.StringDecoder
 import org.apache.log4j.{Level, Logger}
