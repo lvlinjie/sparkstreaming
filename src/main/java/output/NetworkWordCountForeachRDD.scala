@@ -1,0 +1,73 @@
+package output
+
+import java.sql.DriverManager
+
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.streaming.{Seconds, StreamingContext}
+import org.apache.spark.{SparkConf, SparkContext}
+
+/**
+ *
+ * Caused by: java.io.NotSerializableException: com.mysql.cj.jdbc.ClientPreparedStatement
+ * Serialization stack:
+ * 	- object not serializable (class: com.mysql.cj.jdbc.ClientPreparedStatement, value: com.mysql.cj.jdbc.ClientPreparedStatement: insert into wordcount(ts, word, count) values (** NOT SPECIFIED **, ** NOT SPECIFIED **, ** NOT SPECIFIED **))
+ * 	- field (class: output.NetworkWordCountForeachRDD$$anonfun$main$1$$anonfun$apply$1, name: statement$1, type: interface java.sql.PreparedStatement)
+ * 	- object (class output.NetworkWordCountForeachRDD$$anonfun$main$1$$anonfun$apply$1, <function1>)
+ * at org.apache.spark.serializer.SerializationDebugger$.improveException(SerializationDebugger.scala:40)
+ * at org.apache.spark.serializer.JavaSerializationStream.writeObject(JavaSerializer.scala:46)
+ * at org.apache.spark.serializer.JavaSerializerInstance.serialize(JavaSerializer.scala:100)
+ * at org.apache.spark.util.ClosureCleaner$.ensureSerializable(ClosureCleaner.scala:295)
+ * ... 28 more
+ *
+ *
+ *
+ *
+ *
+ *
+ *
+ */
+object NetworkWordCountForeachRDD {
+  def main(args: Array[String]): Unit = {
+    Logger.getLogger("org").setLevel(Level.ERROR)
+    val sparkConf = new   SparkConf().setAppName("NetworkWordCountForeachRDD").setMaster("local[2]")
+
+
+    val sc = new  SparkContext(sparkConf)
+    val ssc = new StreamingContext(sc, Seconds(5))
+    //创建一个接收器(ReceiverInputDStream)，这个接收器接收一台机器上的某个端口通过socket发送过来的数据并处理
+    val lines = ssc.socketTextStream("hadoop", 9999, StorageLevel.MEMORY_AND_DISK_SER)
+    //处理的逻辑，就是简单的进行word count
+    val words = lines.flatMap(_.split(","))
+    val wordCounts = words.map(x => (x, 1)).reduceByKey(_ + _)
+    wordCounts.foreachRDD {
+      (rdd, time) =>
+        Class.forName("com.mysql.cj.jdbc.Driver") // // executed at the driver   在driver端执行
+        /**
+         * 经过网络传输必须要序列化,但是mysql的数据连接不支持序列化,所以这里代码不能执行
+         */
+        val conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/test", "root", "root")
+        val statement = conn.prepareStatement(s"insert into wordcount(ts, word, count) values (?, ?, ?)")
+
+        /**
+         * statement 要从driver通过网络发送该到executor
+         * 涉及2序列化,但是statement不支持序列化
+         */
+        rdd.foreach { record =>
+          statement.setLong(1, time.milliseconds)
+          statement.setString(2, record._1)
+          statement.setInt(3, record._2)
+          statement.execute()  //executed at the worker  在worker端执行
+        }
+        statement.close()
+        conn.close()
+    }
+
+
+    ssc.start()
+    ssc.awaitTermination()
+    ssc.stop()
+
+  }
+
+}
